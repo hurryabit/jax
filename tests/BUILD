@@ -650,6 +650,7 @@ jax_multiplatform_test(
         "gpu": 40,
         "tpu": 40,
     },
+    deps = py_deps("magma"),
 )
 
 jax_multiplatform_test(

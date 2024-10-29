@@ -34,6 +34,8 @@ from jax._src import deprecations
 from jax._src.lax import linalg as lax_linalg
 from jax._src import test_util as jtu
 from jax._src import xla_bridge
+from jax._src.lib import gpu_solver
+from jax._src.lib import version as jaxlib_version
 from jax._src.numpy.util import promote_dtypes_inexact
 
 config.parse_flags_with_absl()
@@ -233,12 +235,22 @@ class NumpyLinalgTest(jtu.JaxTestCase):
     dtype=float_types + complex_types,
     compute_left_eigenvectors=[False, True],
     compute_right_eigenvectors=[False, True],
+    use_magma=[None, False, True],
   )
-  # TODO(phawkins): enable when there is an eigendecomposition implementation
-  # for GPU/TPU.
-  @jtu.run_on_devices("cpu")
+  @jtu.run_on_devices("cpu", "gpu")
   def testEig(self, shape, dtype, compute_left_eigenvectors,
-              compute_right_eigenvectors):
+              compute_right_eigenvectors, use_magma):
+    if jtu.test_device_matches(["gpu"]) and jaxlib_version <= (0, 4, 35):
+      self.skipTest("eig on GPU requires jaxlib version > 0.4.35")
+    if use_magma:
+      if not jtu.test_device_matches(["gpu"]):
+        self.skipTest("Unsupported configuration for testing MAGMA.")
+      if not gpu_solver.has_magma():
+        self.skipTest("MAGMA is not installed or can't be loaded.")
+      # TODO(b/377907938), TODO(danfm): Debug issues MAGMA support for
+      # complex128 in some configurations.
+      if dtype == np.complex128:
+        self.skipTest("MAGMA support for complex128 types is flaky.")
     rng = jtu.rand_default(self.rng())
     n = shape[-1]
     args_maker = lambda: [rng(shape, dtype)]
@@ -261,7 +273,8 @@ class NumpyLinalgTest(jtu.JaxTestCase):
     a, = args_maker()
     results = lax.linalg.eig(
         a, compute_left_eigenvectors=compute_left_eigenvectors,
-        compute_right_eigenvectors=compute_right_eigenvectors)
+        compute_right_eigenvectors=compute_right_eigenvectors,
+        use_magma=use_magma)
     w = results[0]
 
     if compute_left_eigenvectors:
@@ -276,32 +289,43 @@ class NumpyLinalgTest(jtu.JaxTestCase):
     dtype=float_types + complex_types,
     compute_left_eigenvectors=[False, True],
     compute_right_eigenvectors=[False, True],
+    use_magma=[False, True],
   )
-  # TODO(phawkins): enable when there is an eigendecomposition implementation
-  # for GPU/TPU.
-  @jtu.run_on_devices("cpu")
+  @jtu.run_on_devices("cpu", "gpu")
   def testEigHandlesNanInputs(self, shape, dtype, compute_left_eigenvectors,
-                              compute_right_eigenvectors):
+                              compute_right_eigenvectors, use_magma):
     """Verifies that `eig` fails gracefully if given non-finite inputs."""
+    if jtu.test_device_matches(["gpu"]) and jaxlib_version <= (0, 4, 35):
+      self.skipTest("eig on GPU requires jaxlib version > 0.4.35")
+    if use_magma:
+      if not jtu.test_device_matches(["gpu"]):
+        self.skipTest("Unsupported configuration for testing MAGMA.")
+      if not gpu_solver.has_magma():
+        self.skipTest("MAGMA is not installed or can't be loaded.")
+      # TODO(b/377907938), TODO(danfm): Debug issues MAGMA support for
+      # complex128 in some configurations.
+      if dtype == np.complex128:
+        self.skipTest("MAGMA support for complex128 types is flaky.")
     a = jnp.full(shape, jnp.nan, dtype)
     results = lax.linalg.eig(
         a, compute_left_eigenvectors=compute_left_eigenvectors,
-        compute_right_eigenvectors=compute_right_eigenvectors)
+        compute_right_eigenvectors=compute_right_eigenvectors,
+        use_magma=use_magma)
     for result in results:
       self.assertTrue(np.all(np.isnan(result)))
 
   @jtu.sample_product(
     shape=[(4, 4), (5, 5), (8, 8), (7, 6, 6)],
     dtype=float_types + complex_types,
-  )
-  # TODO(phawkins): enable when there is an eigendecomposition implementation
-  # for GPU/TPU.
-  @jtu.run_on_devices("cpu")
+ )
+  @jtu.run_on_devices("cpu", "gpu")
   def testEigvalsGrad(self, shape, dtype):
     # This test sometimes fails for large matrices. I (@j-towns) suspect, but
     # haven't checked, that might be because of perturbations causing the
     # ordering of eigenvalues to change, which will trip up check_grads. So we
     # just test on small-ish matrices.
+    if jtu.test_device_matches(["gpu"]) and jaxlib_version <= (0, 4, 35):
+      self.skipTest("eig on GPU requires jaxlib version > 0.4.35")
     rng = jtu.rand_default(self.rng())
     args_maker = lambda: [rng(shape, dtype)]
     a, = args_maker()
@@ -313,10 +337,10 @@ class NumpyLinalgTest(jtu.JaxTestCase):
     shape=[(4, 4), (5, 5), (50, 50)],
     dtype=float_types + complex_types,
   )
-  # TODO: enable when there is an eigendecomposition implementation
-  # for GPU/TPU.
-  @jtu.run_on_devices("cpu")
+  @jtu.run_on_devices("cpu", "gpu")
   def testEigvals(self, shape, dtype):
+    if jtu.test_device_matches(["gpu"]) and jaxlib_version <= (0, 4, 35):
+      self.skipTest("eig on GPU requires jaxlib version > 0.4.35")
     rng = jtu.rand_default(self.rng())
     args_maker = lambda: [rng(shape, dtype)]
     a, = args_maker()
@@ -324,9 +348,11 @@ class NumpyLinalgTest(jtu.JaxTestCase):
     w2 = jnp.linalg.eigvals(a)
     self.assertAllClose(w1, w2, rtol={np.complex64: 1e-5, np.complex128: 2e-14})
 
-  @jtu.run_on_devices("cpu")
+  @jtu.run_on_devices("cpu", "gpu")
   def testEigvalsInf(self):
     # https://github.com/jax-ml/jax/issues/2661
+    if jtu.test_device_matches(["gpu"]) and jaxlib_version <= (0, 4, 35):
+      self.skipTest("eig on GPU requires jaxlib version > 0.4.35")
     x = jnp.array([[jnp.inf]])
     self.assertTrue(jnp.all(jnp.isnan(jnp.linalg.eigvals(x))))
 
@@ -334,8 +360,10 @@ class NumpyLinalgTest(jtu.JaxTestCase):
     shape=[(1, 1), (4, 4), (5, 5)],
     dtype=float_types + complex_types,
   )
-  @jtu.run_on_devices("cpu")
+  @jtu.run_on_devices("cpu", "gpu")
   def testEigBatching(self, shape, dtype):
+    if jtu.test_device_matches(["gpu"]) and jaxlib_version <= (0, 4, 35):
+      self.skipTest("eig on GPU requires jaxlib version > 0.4.35")
     rng = jtu.rand_default(self.rng())
     shape = (10,) + shape
     args = rng(shape, dtype)
