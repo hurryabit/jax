@@ -1505,7 +1505,7 @@ class ComputeOffload(jtu.BufferDonationTestCase):
         test_fn,
         out_shardings=(
             Layout(custom_dll, sharding),
-            Layout(custom_dll, p_sharding),
+            Layout(custom_dll_linear, p_sharding),
         ),
     )
     x_out, y_out = jit_fn(x, y)
