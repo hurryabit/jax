@@ -2554,7 +2554,10 @@ LogicalResult tpu_concatenate_rule(RewriteContext &ctx, Operation &op,
   TPU_ASSERT_OP(res_layout.has_value());
   auto num_untiled_dims = res_ty.getRank() - res_layout->layout_rank();
 
-  if (dimension >= num_untiled_dims) {
+  if (res_ty.getRank() == 1 &&
+      res_layout->implicit_dim() == VectorLayout::ImplicitDim::kSecondMinor) {
+    tiling_dim = 1;
+  } else if (dimension >= num_untiled_dims) {
     tiling_dim = dimension - num_untiled_dims;
   }
 
@@ -2611,28 +2614,38 @@ LogicalResult tpu_concatenate_rule(RewriteContext &ctx, Operation &op,
   if (!tiling_dim.has_value()) {
     out_vregs = concatenate(operand_vregs, dimension);
   } else {
-    if (res_layout->implicit_dim() != VectorLayout::ImplicitDim::kNone) {
+    if (res_layout->implicit_dim() == VectorLayout::ImplicitDim::kSecondMinor &&
+        res_ty.getRank() != 1) {
       return op.emitOpError("Not implemented: implicit dim");
     }
     if (res_layout->offsets()[tiling_dim.value()] != 0) {
       return op.emitOpError("Not implemented: result non-zero offset.");
     }
-    if (!res_layout->hasNativeTiling(ctx.target_shape)) {
+    if (!res_layout->hasNativeTiling(ctx.target_shape) &&
+        res_ty.getRank() != 1) {
       return op.emitOpError("Not implemented: Non native tiling in concat.");
     }
 
+    const auto &target_shape = ctx.target_shape;
     int64_t offset_at_dim = 0;
     {
       for (int i = 0; i < op.getNumOperands(); ++i) {
         auto operand = op.getOperand(i);
         auto const &layout = *layouts_in[i];
+        auto vreg_array = operand_vregs[i];
+        auto vreg_slice = layout.vregSlice(target_shape);
+        auto tiling = layout.tiling();
 
         auto vty = cast<VectorType>(operand.getType());
         auto shape = vty.getShape();
 
         auto starting_point = offset_at_dim;
         auto offset_amount =
-            starting_point % layout.tiling()[tiling_dim.value()];
+            starting_point % vreg_slice[tiling_dim.value()];
+        if (offset_amount >= tiling[tiling_dim.value()]) {
+          return op.emitError(
+              "Not implemented: Input offsets outside of the first tile");
+        }
         if (offset_amount != layout.offsets()[tiling_dim.value()]) {
           return op.emitOpError(
               "Not implemented: Relayout not called, unaligned dims "
@@ -2649,7 +2662,8 @@ LogicalResult tpu_concatenate_rule(RewriteContext &ctx, Operation &op,
       auto &vreg = operand_vregs[i];
       const auto &layout = layouts_in[i];
 
-      if (layout->implicit_dim() != VectorLayout::ImplicitDim::kNone) {
+      if (layout->implicit_dim() != VectorLayout::ImplicitDim::kNone &&
+          res_ty.getRank() != 1) {
         return op.emitOpError("Not implemented: implicit dim");
       }
 

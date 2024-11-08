@@ -774,9 +774,6 @@ class VectorLayoutInferer {
     auto dimension = op.getDimension();
     TPU_CHECK_OP(0 <= dimension && dimension < res_rank,
                  "Expect a valid concatenate dimension");
-    if (res_rank == 1) {
-      NYI("Support concatenation with 1D vectors");
-    }
     auto res_ty = op.getResult().getType();
     int8_t bitwidth = res_ty.getElementTypeBitWidth();
 
@@ -795,24 +792,36 @@ class VectorLayoutInferer {
       SmallVector<Layout> in_layouts;
       in_layouts.reserve(op.getSources().size());
 
-      auto native_tiling = nativeTiling(bitwidth);
+      // Set implicit dim to treat 1D as (1, N) and tile it as (1, 128)
+      auto tiling = res_rank == 1 ? std::array<int64_t, 2>{1L, target_shape_[1]}
+                                  : nativeTiling(bitwidth);
+      auto implicit_dim =
+          res_rank == 1 ? ImplicitDim::kSecondMinor : ImplicitDim::kNone;
 
       for (int i = 0; i < op.getSources().size(); ++i) {
         // Compute the offset per source.
         // Ex: for a cat of (10, 128), (10, 128) on dim 0, where the
-        // vreg_sice for that dim is 8, the first source starts at
+        // vreg_slice for that dim is 8, the first source starts at
         // offset 0, and overflows the vreg
         // by 2, so the offset for the second input is 2.
         auto op_shape =
             cast<VectorType>(op.getSources()[i].getType()).getShape();
-        auto offset_amount = starting_point % native_tiling[tiling_dim.value()];
         auto op_layout = op_layouts[i];
+        auto vreg_slice_at_dim = tiling[tiling_dim.value()];
+        // For 1D we use a non-native tiling of (1, 128) so we have to consider
+        // that in vreg_slice
+        if (res_rank == 1) vreg_slice_at_dim *= 8;
+        auto offset_amount = starting_point % vreg_slice_at_dim;
+        if (offset_amount >= tiling[tiling_dim.value()]) {
+          return op.emitError(
+              "Not implemented: Input offsets outside of the first tile");
+        }
         SmallVector<int64_t> in_idx{op_layout->offsets()[0].value_or(0),
                                     op_layout->offsets()[1].value_or(0)};
         in_idx[tiling_dim.value()] = offset_amount;
         starting_point += op_shape[dimension];
         in_layouts.push_back(VectorLayout(bitwidth, {in_idx[0], in_idx[1]},
-                                          native_tiling, ImplicitDim::kNone));
+                                          tiling, implicit_dim));
       }
       SmallVector<int64_t> res_layout_offsets(
           {first_layout->offsets()[0].value_or(0),
@@ -823,7 +832,7 @@ class VectorLayoutInferer {
       // tiling.
       auto res_layout =
           VectorLayout(bitwidth, {res_layout_offsets[0], res_layout_offsets[1]},
-                       native_tiling, ImplicitDim::kNone);
+                       tiling, implicit_dim);
       setLayout(op, in_layouts, res_layout);
       return success();
     } else {
