@@ -2654,3 +2654,19 @@ def _dtype_to_ir_type(dtype: jnp.dtype) -> ir.Type:
     # All integer types in Triton are signless.
     return ir.IntegerType.get_signless(dtype.itemsize * 8)
   return mlir.dtype_to_ir_type(dtype)
+
+
+@register_lowering(lax.bitcast_convert_type_p)
+def _bitcast_convert_type_lowering_rule(
+    ctx: LoweringRuleContext, operand: ir.Value, *, new_dtype) -> ir.Value:
+  # TODO(petebu) Handle case where src and dst types have different bitwidths
+  src_element_type = _element_type(operand.type)
+  dst_element_type = _element_type(_dtype_to_ir_type(new_dtype))
+  if src_element_type.width == dst_element_type.width:
+    shape = list(ir.RankedTensorType(operand.type).shape)
+    output_type = ir.RankedTensorType.get(shape, dst_element_type)
+    return tt_dialect.bitcast(output_type, operand)
+  else:
+    raise NotImplementedError(
+        f"cannot cast {operand} to {new_dtype} because of different widths"
+    )

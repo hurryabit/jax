@@ -2001,6 +2001,29 @@ class PallasPrimitivesTest(PallasBaseTest):
         lu.wrap_init(body), [state.shaped_array_ref((4, 3, 2), jnp.int32)])
     self.assertIn(expected, jaxpr.pretty_print(use_color=False))
 
+  @parameterized.parameters(
+      (jnp.int16, jnp.float16),
+      (jnp.int32, jnp.float32),
+      (jnp.float16, jnp.int16),
+      (jnp.float32, jnp.int32),
+  )
+  def test_bitcast_convert_type(self, in_dtype, out_dtype):
+    if jtu.test_device_matches(["tpu"]):
+      self.skipTest("Not implemented on TPU")
+
+    m, n = 4, 4
+    out_shape = jax.ShapeDtypeStruct((m, n), out_dtype)
+    grid = ()
+
+    @functools.partial(self.pallas_call, out_shape=out_shape, grid=grid)
+    def convert(x_ref, y_ref):
+      y_ref[...] = jax.lax.bitcast_convert_type(x_ref[...], out_shape)
+
+    x = jnp.arange(m * n, dtype=in_dtype).reshape((m, n))
+    y = convert(x)
+    y_ref = jax.lax.bitcast_convert_type(x, out_dtype)
+    np.testing.assert_array_equal(y, y_ref)
+
 
 class PallasPrimitivesInterpretTest(PallasPrimitivesTest):
   INTERPRET = True
